@@ -11,7 +11,7 @@ Claude Code の settings.json は **5 つのスコープ** があり、高い方
 
 ```
 優先度（高）
-│ Managed           C:\Program Files\ClaudeCode\managed-settings.json  ← IT部門が配置・管理者権限必要
+│ Managed           managed tier（下記2系統）
 │ CLI引数            claude --arg=...  ← セッション一時
 │ Local             .claude/settings.local.json  ← リポジトリ内・git追跡しない
 │ Project           .claude/settings.json  ← リポジトリ内・git追跡する
@@ -19,24 +19,42 @@ Claude Code の settings.json は **5 つのスコープ** があり、高い方
 優先度（低）
 ```
 
-### Windows のマネージド設定パス（実機で要確認）
+### managed tier の2系統
 
-公式ドキュメントには以下が記載されています：
+managed tier には **サーバー管理設定**（コンソール配布）と **endpoint-managed**（ファイル/MDM）の
+2系統があります。**最初に非空を返した方が総取りでありマージはしません**。
 
-| 方法 | パス / キー |
-|------|------------|
-| ファイル | `C:\Program Files\ClaudeCode\managed-settings.json` |
-| ドロップイン | `C:\Program Files\ClaudeCode\managed-settings.d\*.json` |
-| Group Policy / Intune | `HKLM\SOFTWARE\Policies\ClaudeCode` |
+```
+managed tier の評価順:
+  1. サーバー管理設定 (server-managed)   ← Claude.ai コンソールから配布
+     キャッシュ: ~/.claude/remote-settings.json
+  2. endpoint-managed                   ← MDM / ファイル配置
+     ファイル: C:\Program Files\ClaudeCode\managed-settings.json
+              C:\Program Files\ClaudeCode\managed-settings.d\*.json
+     レジストリ: HKLM\SOFTWARE\Policies\ClaudeCode
+```
 
-> **注意**: 過去のバージョンでは `C:\ProgramData\ClaudeCode\` が使われていた記録もあります。
-> `claude --debug` で起動して出力されるログで実際の読込パスを必ず確認してください。
+サーバー管理設定が1つでもキーを持っていれば endpoint-managed は**無視**されます。
+`/status` で現在どちらが有効かを確認できます。
+
+### サーバー管理設定（本テンプレートの対象）
+
+**Claude for Teams（v2.1.38+）** または **Claude for Enterprise（v2.1.30+）** で利用可能。
+
+- MDM・デバイス管理インフラ不要。
+- **配布方法**: Claude.ai 管理コンソール → **Admin Settings → Claude Code → Managed settings** に JSON を貼付。
+- **適用タイミング**: 起動時フェッチ + 1時間ごとのポーリング。
+- **キャッシュ**: `~/.claude/remote-settings.json` に保存。ネット断時はキャッシュを継続使用。
+  `forceRemoteSettingsRefresh: true` の場合、フェッチ失敗時は起動を中断（後述）。
+- **設定権限**: Primary Owner / Owner ロールのみ変更可能。
+- **適用範囲**: 組織全員に一律適用。グループ別設定は未対応（2026年6月時点）。
+- **`api.anthropic.com` への到達性が必要**（設定フェッチのため）。
 
 ### ファイル配置と共有
 
 | スコープ | Gitで共有 | 用途 |
 |---------|-----------|------|
-| Managed | しない（IT配布） | 組織強制ポリシー（上書き不可） |
+| Managed（コンソール） | しない（コンソール管理） | 組織強制ポリシー（上書き不可） |
 | Project | する | チーム共通のプロジェクトポリシー |
 | Local | しない（.gitignore） | 個人のプロジェクト内調整 |
 | User | しない | 個人の全プロジェクト共通設定 |
@@ -73,18 +91,23 @@ Claude Code の settings.json は **5 つのスコープ** があり、高い方
 <リポジトリルート>/.claude/settings.json
 ```
 
-### `managed-settings.json`（IT強制レイヤー）
+### `managed-settings.json`（Teamサーバー管理設定・コンソール配布）
 
-**対象**: 組織全体に強制したい最小限のポリシー。ユーザー設定・プロジェクト設定でも上書き不可。
+**対象**: 組織全体に強制したいポリシー。ユーザー設定・プロジェクト設定でも上書き不可。
 
-- `disableBypassPermissionsMode: true` → `bypassPermissions` モードへの切り替えを封鎖
-- 認証強制（`forceLoginMethod` / `forceLoginOrgUUID`）を設定（placeholder → 後述の「認証強制の設定方法」参照）
-- deny は「絶対に禁止」の最後の砦として重複して設定
+- `allowManagedPermissionRulesOnly: true` → ユーザー/プロジェクト側の `allow` を無効化。自己昇格を封鎖。
+- `disableBypassPermissionsMode: "disable"` → `bypassPermissions` モードへの切り替えを封鎖。
+- `forceRemoteSettingsRefresh: true` → フェッチ失敗時は起動中断（フェイルクローズ）。
+- 認証強制・最低バージョン・deny ルール・OTEL 設定を一括配布。
 
-**配置先**（管理者権限が必要）:
+**配布方法**（Primary Owner / Owner 権限が必要）:
 ```
-C:\Program Files\ClaudeCode\managed-settings.json
+Claude.ai 管理コンソール → Admin Settings → Claude Code → Managed settings
+→ JSON をそのまま貼付 → 保存
 ```
+
+> **`api.anthropic.com` への到達性が必須**: `forceRemoteSettingsRefresh: true` を有効にすると、
+> フェッチ失敗時に起動が中断します。ファイアウォール設定でこのエンドポイントへの疎通を必ず確認してください。
 
 ---
 
@@ -124,6 +147,10 @@ C:\Program Files\ClaudeCode\managed-settings.json
 `DISABLE_TELEMETRY=1`（Anthropic 向けを止める）と `CLAUDE_CODE_ENABLE_TELEMETRY=1`（自社向けを有効にする）は
 **共存できます**。送信先が別々だからです。
 
+> **注意**: `env` キーに含まれるカスタム環境変数はサーバー管理設定から配布されると、
+> ユーザーが **起動時にセキュリティ承認ダイアログ** で確認する必要があります。
+> また、OTEL 関連の変数を変更した場合は **完全な再起動** が必要です（ポーリング更新では反映されません）。
+
 ### 通信制御なしで「Anthropic にどのデータが送られるか」
 
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` を設定しない場合、以下が送信されます：
@@ -147,6 +174,18 @@ deny > allow > ask > defaultMode
 deny は **どこに書いてあっても最優先でブロック**されます。
 managed-settings.json の deny は user-settings.json の allow より強い。
 
+### `allowManagedPermissionRulesOnly: true` の意味
+
+管理者が定義した `allow`/`deny` のみを有効とし、
+ユーザー・プロジェクト側の `allow` ルールを**無効化**します。
+ユーザーが手元の settings.json に `allow` を追記しても自動承認されなくなり、
+自己昇格を封じることができます。
+
+このキーを有効にする場合、managed 側の `allow` に**日常業務で必要な安全な操作を最小限列挙**しておかないと、
+すべての操作が毎回プロンプト（確認要求）になりノイズが増えます。本テンプレートでは
+読み取り系 git コマンド・ビルド/テスト実行・基本的なファイル一覧を事前 allow としています。
+組織の業務に応じてこのリストを拡張してください（`deny` にないものを追加するのみで安全です）。
+
 ### Bash の deny パターンの注意点（重要）
 
 `Bash(curl:*)` は「curl で始まるコマンド」を接頭辞マッチでブロックします。
@@ -165,7 +204,7 @@ python -c "import urllib.request; urllib.request.urlopen('https://...')"
 
 **結論**: Bash の deny はベストエフォート。
 真のガードは `defaultMode` による人間の確認（推奨型）または `defaultMode: "plan"` + `allow` ホワイトリスト（厳格型）です。
-マネージド設定の `disableBypassPermissionsMode: true` を組み合わせることで、
+マネージド設定の `disableBypassPermissionsMode: "disable"` を組み合わせることで、
 ユーザーがパーミッションを無効化することを防げます。
 
 ### 4カテゴリの deny 解説
@@ -186,38 +225,47 @@ python -c "import urllib.request; urllib.request.urlopen('https://...')"
 
 ---
 
-## 5. 認証強制の設定方法（managed-settings.json）
+## 5. 認証強制と強制キーの設定方法（managed-settings.json）
 
-`managed-settings.json` の以下フィールドに実値を入れてください。
+### `forceLoginMethod`
 
-### `forceLoginMethod` の選択肢
+Team プランは Claude.ai サブスクリプションなので **`"claudeai"` で固定**してください。
 
 | 値 | 意味 | 向いているケース |
 |----|------|----------------|
-| `"claudeai"` | Claude.ai アカウントのみ許可 | Claude Pro/Max/Team/Enterprise サブスクリプション |
+| `"claudeai"` | Claude.ai アカウントのみ許可 | **Team プラン**（本テンプレートの対象） |
 | `"console"` | Claude Console（API課金）のみ許可 | Console で API キー管理している組織 |
 
-設定例:
-```json
-"forceLoginMethod": "claudeai"
-```
+### `forceLoginOrgUUID`
 
-### `forceLoginOrgUUID` の取得方法
-
-Claude for Teams/Enterprise を使っている場合、組織 UUID を指定すると
-**その組織のメンバーのみ**が使えるようになります（他アカウントでの起動をブロック）。
+Claude for Teams を使っている場合、組織 UUID を指定すると
+**その組織のメンバーのみ**が使えるようになります。
+サーバー管理設定はすでに「コンソールにログインした組織のメンバー」にしか配布されないため
+ある意味冗長ですが、**多重防御（認証トークン盗用対策など）として残すことを推奨**します。
 
 UUID の取得先:
 - Claude.ai → 管理者ダッシュボード → 組織設定 → 組織 ID
 - または Anthropic サポートに問い合わせ
 
-設定例:
-```json
-"forceLoginOrgUUID": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxfffff"
-```
-
 > **placeholder のまま使わないこと**: `<YOUR-ORG-UUID>` という文字列のままでは JSON の値が不正になります。
 > 実際に運用する際は必ず実値に置き換えるか、`forceLoginOrgUUID` キー自体を削除してください。
+
+### `requiredMinimumVersion`
+
+ユーザーが利用できる Claude Code の最低バージョンを指定します。
+`"2.1.38"` は Team のサーバー管理設定が対応している最低バージョンです。
+これ以前のバージョンでは起動がブロックされます。
+
+### `forceRemoteSettingsRefresh`
+
+`true` にすると、起動時のサーバー設定フェッチが失敗した場合に **起動を中断**します（フェイルクローズ）。
+デフォルト（`false`）はフェッチ失敗時もキャッシュ設定または無設定で継続します。
+
+> **前提**: `api.anthropic.com` への到達性が必要です。
+> このエンドポイントがファイアウォールで遮断されていると、ユーザーが Claude Code を起動できなくなります。
+> 有効化前に必ず疎通確認を行ってください。
+> なお `claude auth login` などの認証コマンドはこのチェックから除外されるため、
+> 認証切れによるフェッチ失敗でユーザーが詰まることはありません（v2.1.139+）。
 
 ---
 
@@ -235,55 +283,60 @@ UUID の取得先:
 誰でも切り替えられる状態になります。
 
 本テンプレートではこの設定は含めていません。
-マネージド設定の `disableBypassPermissionsMode: true` により、バイパスモード自体を封じることを推奨します。
+マネージド設定の `disableBypassPermissionsMode: "disable"` により、バイパスモード自体を封じることを推奨します。
 
 ---
 
-## 7. 検証手順
+## 7. 検証手順（サーバー管理設定・コンソール配布版）
 
-### Step 1: JSON 構文チェック
+### Step 1: JSON 構文チェック（配布前）
 
 ```powershell
-Get-Content "examples\user-settings.recommended.json" | ConvertFrom-Json
-Get-Content "examples\user-settings.strict.json"     | ConvertFrom-Json
-Get-Content "examples\managed-settings.json"          | ConvertFrom-Json
+Get-Content "examples\managed-settings.json" | ConvertFrom-Json
 ```
 
 エラーが出なければ構文 OK。
 
-### Step 2: テスト用コピーと設定反映確認
+### Step 2: コンソールへの貼付と配布
 
-推奨型をユーザー設定に一時コピーする場合（元設定のバックアップを忘れずに）:
+1. `forceLoginOrgUUID` を実際の組織 UUID に置き換えます（または削除）。
+2. `OTEL_EXPORTER_OTLP_ENDPOINT` を自社コレクタの URL に置き換えます。
+3. [Claude.ai](https://claude.ai) に Primary Owner / Owner アカウントでログインします。
+4. **Admin Settings → Claude Code → Managed settings** を開きます。
+5. JSON をそのまま貼付して保存します。
 
-```powershell
-# バックアップ
-Copy-Item "$env:USERPROFILE\.claude\settings.json" "$env:USERPROFILE\.claude\settings.json.bak"
+### Step 3: 設定反映の確認
 
-# テンプレートを適用
-Copy-Item "examples\user-settings.recommended.json" "$env:USERPROFILE\.claude\settings.json"
+テスト端末で Claude Code を**再起動**し、以下を確認:
+
+```
+# 有効な managed ソースを確認（"server" が表示されるはず）
+/status
+
+# deny/allow ルールの反映を確認
+/permissions
 ```
 
-Claude Code 起動後に `/config` でキーを確認、`/permissions` で deny ルールを確認。
+### Step 4: セキュリティ承認ダイアログの確認
 
-### Step 3: 設定読込先の確認
+`env` キーにカスタム環境変数が含まれているため、再起動時に
+**セキュリティ承認ダイアログ**が表示されます。ユーザーが「承認」することで設定が有効になります。
+ダイアログを確認し、内容が意図通りであることを確認してください。
 
-```powershell
-claude --debug 2>&1 | Select-String -Pattern "settings|config|managed"
-```
-
-どのパスから設定が読まれているか確認できます。
-
-### Step 4: deny の動作テスト
+### Step 5: deny の動作テスト
 
 以下をプロンプトで指示し、ブロックされることを確認:
 - `.env` ファイルの読み取りを依頼 → `Read` が deny されるはず
 - `curl` でURLにアクセスするよう依頼 → `Bash(curl:*)` が deny されるはず
+- bypass モードへの切り替えを試みる → `disableBypassPermissionsMode: "disable"` でブロックされるはず
 
-### Step 5: 元の設定に戻す
+### Step 6: `claude doctor` による診断（任意）
 
 ```powershell
-Move-Item "$env:USERPROFILE\.claude\settings.json.bak" "$env:USERPROFILE\.claude\settings.json" -Force
+claude doctor
 ```
+
+設定の読み込み状態や接続確認を実施します。配布前のテスト機での実行を推奨します。
 
 ---
 
@@ -320,8 +373,8 @@ OTEL ヘッダー（API キー等）が必要な場合は `OTEL_EXPORTER_OTLP_HE
 - SQL インジェクション / XSS の回避・安全な乱数の使用などのセキュアコーディング原則
 - TLS 証明書検証や認証チェックを「動かすため」に無効化しない
 
-これらは `claudeMd`（**組織の指示**）で補完します。
-`settings.json`（ハード制御）と `claudeMd`（ソフト制御）は **補完関係**であり、どちらか一方では不十分です。
+これらは **組織の指示**（`claudeMd` の仕組み）で補完します。
+`settings.json`（ハード制御）と組織の指示（ソフト制御）は **補完関係**であり、どちらか一方では不十分です。
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -332,55 +385,50 @@ OTEL ヘッダー（API キー等）が必要な場合は `OTEL_EXPORTER_OTLP_HE
 │  ├─ disableBypassPermissionsMode: バイパスモードを封鎖        │
 │  └─ 最後の砦。ただしベストエフォート（パイプ回避あり）        │
 │                                         ↕ 補完              │
-│  claudeMd（ソフト制御・振る舞い・方針）                       │
+│  組織の指示（ソフト制御・振る舞い・方針）                     │
 │  ├─ シークレット取り扱い / プロンプトインジェクション対策      │
 │  ├─ セキュアコーディング原則 / 持ち出し抑制                   │
 │  └─ settings.json で表現できない「方針」を自然言語で定義      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### 組織の指示の設定方法（推奨: コンソールの専用フィールド）
+
+Team / Enterprise プランの管理コンソールには **「組織の指示」専用フィールド**（〜3000文字）があります。
+`examples/organization-instructions.md` の本文（約2200文字）はそのまま収まります。
+
+1. [Anthropic 管理コンソール](https://claude.ai) → **Admin Settings → Claude Code** を開く。
+2. **「組織の指示（Organization Instructions）」フィールド** に `examples/organization-instructions.md` の本文を貼り付ける。
+3. 保存後、ユーザーが次回起動時（または 1 時間以内のポーリング）に反映されます。
+
+> **`claudeMd` フィールド（JSON 埋め込み）との使い分け**:
+> 3000文字を超える場合、または Managed settings JSON ですべてを一元管理したい場合は、
+> `managed-settings.json` の `claudeMd` キーに JSON 文字列として記述することもできます。
+> ただし JSON のエスケープが必要になるため、通常は専用フィールドへの貼付を推奨します。
+>
+> ```json
+> {
+>   "claudeMd": "## セキュリティポリシー\n\n### 1. シークレット...\n（本文を1行に）"
+> }
+> ```
+
 ### claudeMd の位置づけ
 
 | 設定 | スコープ | 設定元 | ユーザー上書き | 注入方法 |
 |------|---------|--------|--------------|---------|
-| **`claudeMd`（管理コンソール）** | 組織全体 | Anthropic 管理コンソール | ❌ 不可 | managed tier で CLAUDE.md として注入 |
+| **組織の指示（コンソール専用フィールド）** | 組織全体 | Anthropic 管理コンソール | ❌ 不可 | managed tier で CLAUDE.md として注入 |
+| **`claudeMd`（JSON フィールド）** | 組織全体 | managed-settings.json | ❌ 不可 | 同上（専用フィールドの代替） |
 | CLAUDE.md（プロジェクト） | プロジェクト/ユーザー | ローカルファイル | ✅ 可 | プロジェクト設定として読込 |
 | `settings.json`（managed） | 組織全体 | managed-settings.json | ❌ 不可 | 最優先スコープで適用 |
-| `settings.json`（project/user） | プロジェクト/個人 | ローカルファイル | ✅ 可（managed の下で） | スコープ順に適用 |
 
-`claudeMd` は **managed tier（最高優先）** で全ユーザーに適用され、ユーザーは上書きできません。
-CLAUDE.md ファイルとは別の仕組みで注入されますが、動作は CLAUDE.md と同様にセッション開始時に
-コンテキストとして取り込まれます。
-
-### 設定方法（管理コンソール）
-
-1. [Anthropic 管理コンソール](https://console.anthropic.com) → **Claude Code** → **Managed settings** を開く。
-2. `claudeMd` フィールドに `examples/organization-instructions.md` の本文を貼り付ける。
-3. 保存後、ユーザーが次回起動時（または 1 時間以内のポーリング）に反映されます。
-
-**JSON による managed-settings.json への直接設定の場合**:
-
-```json
-{
-  "claudeMd": "## セキュリティポリシー\n\n### 1. シークレット・認証情報の取り扱い\n- APIキー、トークン、パスワードをコード・コメント・ログに書かない。\n...（organization-instructions.md の本文を1行にまとめて記載）"
-}
-```
-
-`claudeMdExcludes` を使うと、特定の CLAUDE.md ファイルの読み込みを除外できます：
-
-```json
-{
-  "claudeMd": "...",
-  "claudeMdExcludes": [".local.CLAUDE.md"]
-}
-```
+`claudeMd` / 組織の指示は **managed tier（最高優先）** で全ユーザーに適用され、ユーザーは上書きできません。
 
 > **注意**:
-> - `claudeMd` は **Claude for Teams（v2.1.38 以降）** および **Claude for Enterprise（v2.1.30 以降）** でのみ利用可能です。
+> - 組織の指示は **Claude for Teams（v2.1.38 以降）** および **Claude for Enterprise（v2.1.30 以降）** でのみ利用可能です。
 > - Bedrock / Vertex AI / Foundry などの第三者プロバイダ経由では使用できません。
 > - 設定の反映には `api.anthropic.com` への到達が必要です。
-> - `claudeMd` は **ハード制御（deny / `disableBypassPermissionsMode`）の代替ではなく補完**です。
->   最後の砦は引き続き `managed-settings.json` の `deny` ルールと `disableBypassPermissionsMode: true` です。
+> - 組織の指示は **ハード制御（deny / `disableBypassPermissionsMode`）の代替ではなく補完**です。
+>   最後の砦は引き続き `managed-settings.json` の `deny` ルールと `disableBypassPermissionsMode: "disable"` です。
 
 ### 検証手順
 
@@ -398,7 +446,8 @@ CLAUDE.md ファイルとは別の仕組みで注入されますが、動作は 
 ## 参考リンク
 
 - [Claude Code 設定リファレンス](https://code.claude.com/docs/en/settings)
-- [Claude Code 認証ドキュメント](https://code.claude.com/docs/en/iam)
-- [Claude Code サーバー管理設定 (claudeMd)](https://code.claude.com/docs/en/server-managed-settings)
-- [Claude Code メモリ・CLAUDE.md](https://code.claude.com/docs/en/memory)
+- [Claude Code サーバー管理設定](https://code.claude.com/docs/en/server-managed-settings)
+- [Claude Code 認証ドキュメント](https://code.claude.com/docs/en/authentication)
+- [Claude Code 権限・managed-only 設定](https://code.claude.com/docs/en/permissions)
+- [Claude Code メモリ・CLAUDE.md（org-wide 配布含む）](https://code.claude.com/docs/en/memory)
 - [OpenTelemetry OTLP Exporter](https://opentelemetry.io/docs/specs/otlp/)
